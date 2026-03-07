@@ -581,11 +581,11 @@ describe("generatePagesRouterWorkerEntry", () => {
 
   it("preserves x-middleware-request-* headers for prod request override handling", () => {
     const content = generatePagesRouterWorkerEntry();
-    // Worker entry must unpack x-middleware-request-* into the actual request
-    expect(content).toContain('const mwReqPrefix = "x-middleware-request-"');
-    expect(content).toContain('key.startsWith(mwReqPrefix)');
-    // Worker entry must also strip remaining x-middleware-* headers (defense-in-depth)
-    expect(content).toContain('key.startsWith("x-middleware-")');
+    // Worker entry must import applyMiddlewareRequestHeaders from config-matchers
+    // (the logic for unpacking x-middleware-request-* and stripping x-middleware-*
+    // now lives there rather than being inlined in the worker entry).
+    expect(content).toContain("applyMiddlewareRequestHeaders");
+    expect(content).toContain("vinext/config/config-matchers");
   });
 
   it("handles external rewrites via proxyExternalRequest", () => {
