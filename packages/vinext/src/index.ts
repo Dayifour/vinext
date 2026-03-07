@@ -2050,12 +2050,19 @@ hydrate();
               origin: /^https?:\/\/(?:(?:[^:]+\.)?localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/,
             },
           },
-          // Externalize React packages from SSR transform — they are CJS and
-          // must be loaded natively by Node, not through Vite's ESM evaluator.
+          // Configure SSR transform behaviour for Node targets.
+          // - `external`: React packages are loaded natively by Node (CJS)
+          //   rather than through Vite's ESM evaluator.
+          // - `noExternal: true`: force everything else through Vite's
+          //   transform pipeline so non-JS imports (CSS, images) from
+          //   node_modules don't hit Node's native ESM loader.
+          //   Any user-provided `ssr.noExternal` is intentionally superseded
+          //   by this setting; only `ssr.external` entries escape Vite's transform.
           // Skip when targeting bundled runtimes (Cloudflare/Nitro bundle everything).
           ...(hasCloudflarePlugin || hasNitroPlugin ? {} : {
             ssr: {
               external: ["react", "react-dom", "react-dom/server"],
+              noExternal: true,
             },
           }),
           resolve: {
@@ -2091,6 +2098,18 @@ hydrate();
           ...(postcssOverride ? { css: { postcss: postcssOverride } } : {}),
         };
 
+        // Collect user-provided ssr.external so we can propagate it into
+        // both the RSC and SSR environment configs. Vite's `ssr.*` config
+        // only applies to the default `ssr` environment, not custom ones
+        // like `rsc`. Native addon packages (e.g. better-sqlite3) listed
+        // in ssr.external must be externalized from ALL server environments.
+        // Vite's SSROptions.external is `string[] | true`; handle both forms.
+        const userSsrExternal: string[] | true = Array.isArray(config.ssr?.external)
+          ? config.ssr.external
+          : config.ssr?.external === true
+            ? true
+            : [];
+
         // If app/ directory exists, configure RSC environments
         if (hasAppDir) {
           // Compute optimizeDeps.entries so Vite discovers server-side
@@ -2114,11 +2133,19 @@ hydrate();
                   // Note: Do NOT externalize react/react-dom here — they must
                   // be bundled with the "react-server" condition for RSC.
                   // Skip when targeting bundled runtimes (Cloudflare/Nitro).
-                  external: [
+                  external: userSsrExternal === true ? true : [
                     "satori",
                     "@resvg/resvg-js",
                     "yoga-wasm-web",
+                    ...userSsrExternal,
                   ],
+                  // Force all node_modules through Vite's transform pipeline
+                  // so non-JS imports (CSS, images) don't hit Node's native
+                  // ESM loader. Matches Next.js behavior of bundling everything.
+                  // Packages in `external` above take precedence per Vite rules.
+                  // When user sets `ssr.external: true`, skip noExternal since
+                  // everything is already externalized.
+                  ...(userSsrExternal === true ? {} : { noExternal: true as const }),
                 },
               }),
               optimizeDeps: {
@@ -2133,6 +2160,17 @@ hydrate();
               },
             },
             ssr: {
+              ...(hasCloudflarePlugin || hasNitroPlugin ? {} : {
+                resolve: {
+                  external: userSsrExternal === true ? true : [...userSsrExternal],
+                  // Force all node_modules through Vite's transform pipeline
+                  // so non-JS imports (CSS, images) don't hit Node's native
+                  // ESM loader. Matches Next.js behavior of bundling everything.
+                  // When user sets `ssr.external: true`, skip noExternal since
+                  // everything is already externalized.
+                  ...(userSsrExternal === true ? {} : { noExternal: true as const }),
+                },
+              }),
               optimizeDeps: {
                 exclude: ["vinext"],
                 entries: appEntries,
