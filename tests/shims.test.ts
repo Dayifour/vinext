@@ -1762,6 +1762,42 @@ describe("middleware matcher patterns", () => {
     const { matchesMiddleware } = await import("../packages/vinext/src/server/middleware.js");
     expect(matchesMiddleware("/about", "/about")).toBe(true);
     expect(matchesMiddleware("/other", "/about")).toBe(false);
+    // Ported from Next.js: test/e2e/middleware-custom-matchers-i18n/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-custom-matchers-i18n/test/index.test.ts
+    expect(
+      matchesMiddleware("/about", "/about", undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(true);
+    expect(
+      matchesMiddleware("/fr/about", "/about", undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(true);
+    expect(
+      matchesMiddleware("/", "/", undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(true);
+  });
+
+  it("matchesMiddleware: locale-prefixed negative-lookahead matchers keep internal paths excluded", async () => {
+    const { matchesMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    const matcher = "/((?!api|_next|favicon\\.ico).*)";
+    const i18nConfig = {
+      locales: ["en", "fr"],
+      defaultLocale: "en",
+    };
+
+    expect(matchesMiddleware("/fr/about", matcher, undefined, i18nConfig)).toBe(true);
+    expect(matchesMiddleware("/fr/api/hello", matcher, undefined, i18nConfig)).toBe(false);
+    expect(matchesMiddleware("/fr/_next/static/chunk.js", matcher, undefined, i18nConfig)).toBe(
+      false,
+    );
+    expect(matchesMiddleware("/fr/favicon.ico", matcher, undefined, i18nConfig)).toBe(false);
   });
 
   it("matchesMiddleware: array of string matchers", async () => {
@@ -1779,6 +1815,89 @@ describe("middleware matcher patterns", () => {
     expect(matchesMiddleware("/about", matcher)).toBe(true);
     expect(matchesMiddleware("/dashboard/settings", matcher)).toBe(true);
     expect(matchesMiddleware("/other", matcher)).toBe(false);
+  });
+
+  it("matchesMiddleware: object matchers respect has and missing conditions", async () => {
+    const { matchesMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    const matcher: any = [
+      {
+        source: "/dashboard",
+        has: [{ type: "header", key: "x-user-tier", value: "pro" }],
+        missing: [{ type: "cookie", key: "blocked" }],
+      },
+    ];
+
+    expect(matchesMiddleware("/dashboard", matcher)).toBe(false);
+    expect(
+      matchesMiddleware(
+        "/dashboard",
+        matcher,
+        new Request("https://example.com/dashboard", {
+          headers: { "x-user-tier": "pro" },
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      matchesMiddleware(
+        "/dashboard",
+        matcher,
+        new Request("https://example.com/dashboard", {
+          headers: { "x-user-tier": "free", cookie: "blocked=1" },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("matchesMiddleware: rejects a single object matcher config", async () => {
+    const { matchesMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    const matcher: any = {
+      source: "/dashboard",
+      has: [{ type: "header", key: "x-user-tier", value: "pro" }],
+    };
+
+    expect(matchesMiddleware("/dashboard", matcher)).toBe(false);
+    expect(
+      matchesMiddleware(
+        "/dashboard",
+        matcher,
+        new Request("https://example.com/dashboard", {
+          headers: { "x-user-tier": "pro" },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("matchesMiddleware: rejects object matchers with unsupported fields", async () => {
+    const { matchesMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    const matcher: any = [{ source: "/does-not-match", regexp: "^/dashboard(?:/.*)?$" }];
+
+    expect(matchesMiddleware("/dashboard/settings", matcher)).toBe(false);
+    expect(matchesMiddleware("/about", matcher)).toBe(false);
+  });
+
+  it("matchesMiddleware: matches default-locale and locale-prefixed paths unless locale is false", async () => {
+    const { matchesMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    const i18nConfig = {
+      locales: ["en", "fr"],
+      defaultLocale: "en",
+    };
+
+    // Ported from Next.js: test/e2e/middleware-custom-matchers-i18n/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-custom-matchers-i18n/test/index.test.ts
+    expect(matchesMiddleware("/dashboard", [{ source: "/dashboard" }], undefined, i18nConfig)).toBe(
+      true,
+    );
+    expect(
+      matchesMiddleware("/fr/dashboard", [{ source: "/dashboard" }], undefined, i18nConfig),
+    ).toBe(true);
+    expect(
+      matchesMiddleware(
+        "/fr/dashboard",
+        [{ source: "/dashboard", locale: false }],
+        undefined,
+        i18nConfig,
+      ),
+    ).toBe(false);
   });
 
   it("matchesMiddleware: mixed array of strings and objects", async () => {
@@ -1885,10 +2004,61 @@ describe("middleware codegen parity", () => {
     // Exact match
     expect(matchMiddlewarePattern("/about", "/about")).toBe(true);
     expect(matchMiddlewarePattern("/other", "/about")).toBe(false);
+    // Ported from Next.js: test/e2e/middleware-custom-matchers-i18n/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-custom-matchers-i18n/test/index.test.ts
+    expect(
+      matchesMiddleware("/about", "/about", undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(true);
+    expect(
+      matchesMiddleware("/fr/about", "/about", undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(true);
+    // Ported from Next.js: test/e2e/middleware-matcher/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-matcher/index.test.ts
+    expect(
+      matchesMiddleware("/", "/", undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(true);
 
     // Regex pattern with groups (must NOT corrupt the regex via dot-escaping)
     expect(matchMiddlewarePattern("/about", "/((?!api|_next|favicon\\.ico).*)")).toBe(true);
     expect(matchMiddlewarePattern("/api/hello", "/((?!api|_next|favicon\\.ico).*)")).toBe(false);
+    expect(
+      matchesMiddleware("/fr/about", "/((?!api|_next|favicon\\.ico).*)", undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(true);
+    expect(
+      matchesMiddleware("/fr/api/hello", "/((?!api|_next|favicon\\.ico).*)", undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(false);
+    expect(
+      matchesMiddleware(
+        "/fr/_next/static/chunk.js",
+        "/((?!api|_next|favicon\\.ico).*)",
+        undefined,
+        {
+          locales: ["en", "fr"],
+          defaultLocale: "en",
+        },
+      ),
+    ).toBe(false);
+    expect(
+      matchesMiddleware("/fr/favicon.ico", "/((?!api|_next|favicon\\.ico).*)", undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(false);
 
     // Named params
     expect(matchMiddlewarePattern("/user/123", "/user/:id")).toBe(true);
@@ -1896,6 +2066,44 @@ describe("middleware codegen parity", () => {
     // Wildcard
     expect(matchMiddlewarePattern("/dashboard/settings", "/dashboard/:path*")).toBe(true);
     expect(matchMiddlewarePattern("/dashboard", "/dashboard/:path*")).toBe(true);
+
+    const gatedMatcher = [
+      {
+        source: "/dashboard",
+        has: [{ type: "query", key: "preview", value: "1" }],
+        missing: [{ type: "header", key: "x-blocked" }],
+      },
+    ];
+    expect(matchesMiddleware("/dashboard", gatedMatcher)).toBe(false);
+    expect(
+      matchesMiddleware(
+        "/dashboard",
+        gatedMatcher,
+        new Request("https://example.com/dashboard?preview=1"),
+      ),
+    ).toBe(true);
+    expect(
+      matchesMiddleware(
+        "/dashboard",
+        gatedMatcher,
+        new Request("https://example.com/dashboard?preview=1", {
+          headers: { "x-blocked": "1" },
+        }),
+      ),
+    ).toBe(false);
+
+    expect(
+      matchesMiddleware("/dashboard", [{ source: "/dashboard" }], undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(true);
+    expect(
+      matchesMiddleware("/fr/dashboard", [{ source: "/dashboard" }], undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(true);
   });
 
   it("generateMiddlewareMatcherCode('es5') produces working matchesMiddleware", async () => {
@@ -1912,6 +2120,40 @@ describe("middleware codegen parity", () => {
     // Regex guard (must not corrupt regex patterns via dot-escaping)
     expect(matchMiddlewarePattern("/about", "/((?!api|_next|favicon\\.ico).*)")).toBe(true);
     expect(matchMiddlewarePattern("/api/hello", "/((?!api|_next|favicon\\.ico).*)")).toBe(false);
+
+    const headerMatcher = [
+      {
+        source: "/dashboard",
+        has: [{ type: "header", key: "x-user-tier", value: "pro" }],
+      },
+    ];
+    expect(matchesMiddleware("/dashboard", headerMatcher)).toBe(false);
+    expect(
+      matchesMiddleware(
+        "/dashboard",
+        headerMatcher,
+        new Request("https://example.com/dashboard", {
+          headers: { "x-user-tier": "pro" },
+        }),
+      ),
+    ).toBe(true);
+
+    const hostMatcher = [
+      {
+        source: "/dashboard",
+        has: [{ type: "host", value: "example.com" }],
+      },
+    ];
+    const mixedCaseHostRequest = {
+      url: "https://example.com/dashboard",
+      headers: new Headers([["host", "Example.com:3000"]]),
+    };
+    const emptyHostRequest = {
+      url: "https://example.com/dashboard",
+      headers: new Headers([["host", ""]]),
+    };
+    expect(matchesMiddleware("/dashboard", hostMatcher, mixedCaseHostRequest)).toBe(true);
+    expect(matchesMiddleware("/dashboard", hostMatcher, emptyHostRequest)).toBe(false);
   });
 
   it("generateNormalizePathCode produces working __normalizePath", async () => {

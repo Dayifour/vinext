@@ -11,7 +11,12 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { AppRoute } from "../routing/app-router.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
-import type { NextRedirect, NextRewrite, NextHeader } from "../config/next-config.js";
+import type {
+  NextRedirect,
+  NextRewrite,
+  NextHeader,
+  NextI18nConfig,
+} from "../config/next-config.js";
 import { generateDevOriginCheckCode } from "../server/dev-origin-check.js";
 import {
   generateSafeRegExpCode,
@@ -48,6 +53,8 @@ export interface AppRouterConfig {
   allowedDevOrigins?: string[];
   /** Body size limit for server actions in bytes (from experimental.serverActions.bodySizeLimit). */
   bodySizeLimit?: number;
+  /** Internationalization routing config for middleware matcher locale handling. */
+  i18n?: NextI18nConfig | null;
 }
 
 /**
@@ -75,6 +82,7 @@ export function generateRscEntry(
   const headers = config?.headers ?? [];
   const allowedOrigins = config?.allowedOrigins ?? [];
   const bodySizeLimit = config?.bodySizeLimit ?? 1 * 1024 * 1024;
+  const i18nConfig = config?.i18n ?? null;
   // Build import map for all page and layout files
   const imports: string[] = [];
   const importMap: Map<string, string> = new Map();
@@ -244,7 +252,7 @@ import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, merge
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
 ${instrumentationPath ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath.replace(/\\/g, "/"))};` : ""}
 ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(fileURLToPath(new URL("../server/metadata-routes.js", import.meta.url)).replace(/\\/g, "/"))};` : ""}
-import { requestContextFromRequest, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
+import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from ${JSON.stringify(requestPipelinePath)};
 import { _consumeRequestScopedCacheLife, _runWithCacheState } from "next/cache";
 import { runWithFetchCache } from "vinext/fetch-cache";
@@ -1174,6 +1182,7 @@ ${middlewarePath ? generateMiddlewareMatcherCode("modern") : ""}
 
 const __basePath = ${JSON.stringify(bp)};
 const __trailingSlash = ${JSON.stringify(ts)};
+const __i18nConfig = ${JSON.stringify(i18nConfig)};
 const __configRedirects = ${JSON.stringify(redirects)};
 const __configRewrites = ${JSON.stringify(rewrites)};
 const __configHeaders = ${JSON.stringify(headers)};
@@ -1212,7 +1221,7 @@ function __buildPostMwRequestContext(request) {
     headers: ctx.headers,
     cookies: cookiesRecord,
     query: url.searchParams,
-    host: ctx.headers.get("host") || url.host,
+    host: normalizeHost(ctx.headers.get("host"), url.hostname),
   };
 }
 
@@ -1430,7 +1439,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     throw new Error("The " + _fileType + " file must export a function named \`" + _expectedExport + "\` or a \`default\` function.");
   }
   const middlewareMatcher = middlewareModule.config?.matcher;
-  if (matchesMiddleware(cleanPathname, middlewareMatcher)) {
+  if (matchesMiddleware(cleanPathname, middlewareMatcher, request, __i18nConfig)) {
     try {
       // Wrap in NextRequest so middleware gets .nextUrl, .cookies, .geo, .ip, etc.
        // Always construct a new Request with the fully decoded + normalized pathname
