@@ -244,7 +244,7 @@ import {
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
-import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, runWithHeadersContext, applyMiddlewareRequestHeaders, getHeadersContext } from "next/headers";
+import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, runWithHeadersContext, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase } from "next/headers";
 import { NextRequest, NextFetchEvent } from "next/server";
 import { ErrorBoundary, NotFoundBoundary } from "vinext/error-boundary";
 import { LayoutSegmentProvider } from "vinext/layout-segment-context";
@@ -1655,39 +1655,44 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       const action = await loadServerAction(actionId);
       let returnValue;
       let actionRedirect = null;
+      const previousHeadersPhase = setHeadersAccessPhase("action");
       try {
-        const data = await action.apply(null, args);
-        returnValue = { ok: true, data };
-      } catch (e) {
-        // Detect redirect() / permanentRedirect() called inside the action.
-        // These throw errors with digest "NEXT_REDIRECT;replace;url[;status]".
-        // The URL is encodeURIComponent-encoded to prevent semicolons in the URL
-        // from corrupting the delimiter-based digest format.
-        if (e && typeof e === "object" && "digest" in e) {
-          const digest = String(e.digest);
-          if (digest.startsWith("NEXT_REDIRECT;")) {
-            const parts = digest.split(";");
-            actionRedirect = {
-              url: decodeURIComponent(parts[2]),
-              type: parts[1] || "replace",       // "push" or "replace"
-              status: parts[3] ? parseInt(parts[3], 10) : 307,
-            };
-            returnValue = { ok: true, data: undefined };
-          } else if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
-            // notFound() / forbidden() / unauthorized() in action — package as error
-            returnValue = { ok: false, data: e };
+        try {
+          const data = await action.apply(null, args);
+          returnValue = { ok: true, data };
+        } catch (e) {
+          // Detect redirect() / permanentRedirect() called inside the action.
+          // These throw errors with digest "NEXT_REDIRECT;replace;url[;status]".
+          // The URL is encodeURIComponent-encoded to prevent semicolons in the URL
+          // from corrupting the delimiter-based digest format.
+          if (e && typeof e === "object" && "digest" in e) {
+            const digest = String(e.digest);
+            if (digest.startsWith("NEXT_REDIRECT;")) {
+              const parts = digest.split(";");
+              actionRedirect = {
+                url: decodeURIComponent(parts[2]),
+                type: parts[1] || "replace",       // "push" or "replace"
+                status: parts[3] ? parseInt(parts[3], 10) : 307,
+              };
+              returnValue = { ok: true, data: undefined };
+            } else if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
+              // notFound() / forbidden() / unauthorized() in action — package as error
+              returnValue = { ok: false, data: e };
+            } else {
+              // Non-navigation digest error — sanitize in production to avoid
+              // leaking internal details (connection strings, paths, etc.)
+              console.error("[vinext] Server action error:", e);
+              returnValue = { ok: false, data: __sanitizeErrorForClient(e) };
+            }
           } else {
-            // Non-navigation digest error — sanitize in production to avoid
-            // leaking internal details (connection strings, paths, etc.)
+            // Unhandled error — sanitize in production to avoid leaking
+            // internal details (database errors, file paths, stack traces, etc.)
             console.error("[vinext] Server action error:", e);
             returnValue = { ok: false, data: __sanitizeErrorForClient(e) };
           }
-        } else {
-          // Unhandled error — sanitize in production to avoid leaking
-          // internal details (database errors, file paths, stack traces, etc.)
-          console.error("[vinext] Server action error:", e);
-          returnValue = { ok: false, data: __sanitizeErrorForClient(e) };
         }
+      } finally {
+        setHeadersAccessPhase(previousHeadersPhase);
       }
 
       // If the action called redirect(), signal the client to navigate.
@@ -1861,6 +1866,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     }
 
     if (typeof handlerFn === "function") {
+      const previousHeadersPhase = setHeadersAccessPhase("route-handler");
       try {
         const response = await handlerFn(request, { params });
         const dynamicUsedInHandler = consumeDynamicUsage();
@@ -1948,6 +1954,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           console.error("[vinext] Failed to report route handler error:", reportErr);
         });
         return new Response(null, { status: 500 });
+      } finally {
+        setHeadersAccessPhase(previousHeadersPhase);
       }
     }
     setHeadersContext(null);
@@ -1984,25 +1992,18 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     });
   }
 
-  // dynamic = 'error': set a trap context that throws when headers/cookies are accessed
+  // dynamic = 'error': install an access error so request APIs fail with the
+  // static-generation message even for legacy sync property access.
   if (isDynamicError) {
     const errorMsg = 'Page with \`dynamic = "error"\` used a dynamic API. ' +
       'This page was expected to be fully static, but headers(), cookies(), ' +
       'or searchParams was accessed. Remove the dynamic API usage or change ' +
       'the dynamic config to "auto" or "force-dynamic".';
-    const throwingHeaders = new Proxy(new Headers(), {
-      get(target, prop) {
-        if (typeof prop === "string" && prop !== "then") throw new Error(errorMsg);
-        return Reflect.get(target, prop);
-      },
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map(),
+      accessError: new Error(errorMsg),
     });
-    const throwingCookies = new Proxy(new Map(), {
-      get(target, prop) {
-        if (typeof prop === "string" && prop !== "then") throw new Error(errorMsg);
-        return Reflect.get(target, prop);
-      },
-    });
-    setHeadersContext({ headers: throwingHeaders, cookies: throwingCookies });
     setNavigationContext({
       pathname: cleanPathname,
       searchParams: new URLSearchParams(),
@@ -2471,8 +2472,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // force-static / error: treat as static regardless of dynamic usage.
   // force-static intentionally provides empty headers/cookies context so
   // dynamic APIs return safe defaults; we ignore the dynamic usage signal.
-  // dynamic='error' should have already thrown (via throwing Proxy) if user
-  // code accessed dynamic APIs, so reaching here means rendering succeeded.
+  // dynamic='error' should have already thrown via the request API accessError
+  // trap if user code touched a dynamic API, so reaching here means rendering succeeded.
   if ((isForceStatic || isDynamicError) && (revalidateSeconds === null || revalidateSeconds === 0)) {
     return attachMiddlewareContext(new Response(htmlStream, {
       headers: {
