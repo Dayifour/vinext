@@ -273,6 +273,13 @@ const POSTCSS_CONFIG_FILES = [
 ];
 
 /**
+ * Module-level cache for resolvePostcssStringPlugins — avoids re-scanning per Vite environment.
+ * Stores the Promise itself so concurrent calls (RSC/SSR/Client config() hooks firing in
+ * parallel) all await the same in-flight scan rather than each starting their own.
+ */
+const _postcssCache = new Map<string, Promise<{ plugins: any[] } | undefined>>();
+
+/**
  * Resolve PostCSS string plugin names in a project's PostCSS config.
  *
  * Next.js (via postcss-load-config) resolves string plugin names in the
@@ -284,7 +291,15 @@ const POSTCSS_CONFIG_FILES = [
  * Returns the resolved PostCSS config object to inject into Vite's
  * `css.postcss`, or `undefined` if no resolution is needed.
  */
-async function resolvePostcssStringPlugins(
+function resolvePostcssStringPlugins(projectRoot: string): Promise<{ plugins: any[] } | undefined> {
+  if (_postcssCache.has(projectRoot)) return _postcssCache.get(projectRoot)!;
+
+  const promise = _resolvePostcssStringPluginsUncached(projectRoot);
+  _postcssCache.set(projectRoot, promise);
+  return promise;
+}
+
+async function _resolvePostcssStringPluginsUncached(
   projectRoot: string,
 ): Promise<{ plugins: any[] } | undefined> {
   // Find the PostCSS config file
@@ -296,7 +311,9 @@ async function resolvePostcssStringPlugins(
       break;
     }
   }
-  if (!configPath) return undefined;
+  if (!configPath) {
+    return undefined;
+  }
 
   // Load the config file
   let config: any;
@@ -326,11 +343,15 @@ async function resolvePostcssStringPlugins(
 
   // Only process array-form plugins that contain string entries
   // (either bare strings or tuple form ["plugin-name", { options }])
-  if (!config || !Array.isArray(config.plugins)) return undefined;
+  if (!config || !Array.isArray(config.plugins)) {
+    return undefined;
+  }
   const hasStringPlugins = config.plugins.some(
     (p: any) => typeof p === "string" || (Array.isArray(p) && typeof p[0] === "string"),
   );
-  if (!hasStringPlugins) return undefined;
+  if (!hasStringPlugins) {
+    return undefined;
+  }
 
   // Resolve string plugin names to actual plugin functions
   const req = createRequire(path.join(projectRoot, "package.json"));
@@ -3551,14 +3572,23 @@ function findFileWithExts(
   return null;
 }
 
+/** Module-level cache for hasMdxFiles — avoids re-scanning per Vite environment. */
+const _mdxScanCache = new Map<string, boolean>();
+
 /**
  * Check if the project has .mdx files in app/ or pages/ directories.
  */
 function hasMdxFiles(root: string, appDir: string | null, pagesDir: string | null): boolean {
+  const cacheKey = `${root}\0${appDir ?? ""}\0${pagesDir ?? ""}`;
+  if (_mdxScanCache.has(cacheKey)) return _mdxScanCache.get(cacheKey)!;
   const dirs = [appDir, pagesDir].filter(Boolean) as string[];
   for (const dir of dirs) {
-    if (fs.existsSync(dir) && scanDirForMdx(dir)) return true;
+    if (fs.existsSync(dir) && scanDirForMdx(dir)) {
+      _mdxScanCache.set(cacheKey, true);
+      return true;
+    }
   }
+  _mdxScanCache.set(cacheKey, false);
   return false;
 }
 
@@ -3596,6 +3626,9 @@ export type { NextConfig } from "./config/next-config.js";
 export { clientManualChunks, clientOutputConfig, clientTreeshakeConfig, computeLazyChunks };
 export { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle };
 export { resolvePostcssStringPlugins as _resolvePostcssStringPlugins };
+export { _postcssCache };
+export { hasMdxFiles as _hasMdxFiles };
+export { _mdxScanCache };
 export { parseStaticObjectLiteral as _parseStaticObjectLiteral };
 export { stripServerExports as _stripServerExports };
 export { asyncHooksStubPlugin as _asyncHooksStubPlugin };
